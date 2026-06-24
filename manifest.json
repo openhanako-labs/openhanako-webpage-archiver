@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "id": "webpage-archiver",
+  "name": "网页存档器",
+  "version": "2.1.0",
+  "description": "保存网页为离线单文件 HTML，提取网页内容为干净 Markdown 文本，提取网页设计 Token（颜色/字体/间距/圆角/阴影），生成 DESIGN.md 设计系统文档与可视化预览，扫描存档生成结构化元数据与隐私审计，生成 AI 编辑建议 Prompt。基于 SingleFile CLI、Crawl4AI 与 CSS 属性提取。",
+  "minAppVersion": "0.0.0",
+  "trust": "full-access",
+  "contributes": {
+    "tools": [
+      {
+        "source": "tools/save-page.js"
+      },
+      {
+        "source": "tools/extract-text.js"
+      },
+      {
+        "source": "tools/extract-tokens.js"
+      },
+      {
+        "source": "tools/archive-summarize.js"
+      },
+      {
+        "source": "tools/generate-edit-prompt.js"
+      }
+    ]
+  }
+}

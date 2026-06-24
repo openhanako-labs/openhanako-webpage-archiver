@@ -1,0 +1,8 @@
+output/
+*.mjs
+metadata.json
+metadata-summary.md
+DESIGN.md
+design-tokens.json
+design-preview.html
+node_modules/
