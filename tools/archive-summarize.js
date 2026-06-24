@@ -17,6 +17,7 @@
 
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 
 const name = "archive_summarize";
 const description = "扫描网页存档目录，提取标题、来源 URL、正文文本和日期，生成结构化元数据 JSON。v2.1 新增隐私审计维度：扫描追踪脚本与指纹采集 API。Agent 可基于此生成 AI 摘要、标签和关键实体。触发词：存档摘要、生成摘要、AI 摘要、archive summary。";
@@ -217,7 +218,11 @@ function extractMetadata(htmlContent, filePath, doPrivacyAudit) {
 // ─── 主执行 ──────────────────────────────────────────
 
 export async function execute(input = {}, ctx) {
-  const { archiveDir, outputPath, maxFiles = 50, extractText = true, maxTextLength = 5000, privacyAudit = true } = input;
+  const { outputPath, maxFiles = 50, extractText = true, maxTextLength = 5000, privacyAudit = true } = input;
+
+  // 默认 archiveDir 使用 plugin-data 目录
+  const defaultDir = ctx?.dataDir || path.join(os.homedir(), ".hanako", "plugin-data", "webpage-archiver");
+  const archiveDir = input.archiveDir || defaultDir;
 
   if (!archiveDir) {
     return { content: [{ type: "text", text: JSON.stringify({ ok: false, error: "archiveDir 必填" }, null, 2) }] };

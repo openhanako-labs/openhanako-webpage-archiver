@@ -102,7 +102,7 @@ async def main():
 
     if not result or not result.html:
         sys.stdout = sys.__stdout__
-        print(json.dumps({"ok": False, "error": "未能获取页面内容，页面可能被反爬或无法访问"}, ensure_ascii=False))
+        sys.stdout.buffer.write(json.dumps({"ok": False, "error": "未能获取页面内容，页面可能被反爬或无法访问"}, ensure_ascii=False).encode('utf-8'))
         return
 
     html = result.html
@@ -128,7 +128,7 @@ async def main():
 
     if not css_chunks:
         sys.stdout = sys.__stdout__
-        print(json.dumps({"ok": False, "error": "页面中未找到 CSS 样式数据", "url": url}, ensure_ascii=False))
+        sys.stdout.buffer.write(json.dumps({"ok": False, "error": "页面中未找到 CSS 样式数据", "url": url}, ensure_ascii=False).encode('utf-8'))
         return
 
     # 提取各类 Token
@@ -248,13 +248,13 @@ async def main():
     }
 
     sys.stdout = sys.__stdout__
-    print(json.dumps(output, ensure_ascii=False))
+    sys.stdout.buffer.write(json.dumps(output, ensure_ascii=False).encode('utf-8'))
 
 try:
     asyncio.run(main())
 except Exception as e:
     sys.stdout = sys.__stdout__
-    print(json.dumps({"ok": False, "error": str(e), "hint": "确认 crawl4ai 已安装: pip install crawl4ai"}, ensure_ascii=False))
+    sys.stdout.buffer.write(json.dumps({"ok": False, "error": str(e), "hint": "确认 crawl4ai 已安装: pip install crawl4ai"}, ensure_ascii=False).encode('utf-8'))
 `;
 }
 
@@ -482,8 +482,9 @@ function formatAsDesignMd(result) {
 
 // ─── 主执行函数 ──────────────────────────────────────────
 
-async function execute(input = {}) {
-  const { url, format = "css", maxColors = 12, outputDir } = input;
+async function execute(input = {}, ctx) {
+  const { url, format = "css", maxColors = 12 } = input;
+  let { outputDir } = input;
 
   if (!url) {
     return {
@@ -493,6 +494,9 @@ async function execute(input = {}) {
       }],
     };
   }
+
+  const os = await import("node:os");
+  const defaultDir = ctx?.dataDir || path.join(os.homedir(), ".hanako", "plugin-data", "webpage-archiver");
 
   const tmpDir = os.tmpdir();
   const tmpFile = path.join(tmpDir, `extract-tokens-${Date.now()}.py`);
@@ -533,6 +537,10 @@ async function execute(input = {}) {
       case "design-md":
         formatted = formatAsDesignMd(result);
         // 如果有输出目录，保存 DESIGN.md
+        // 确保 outputDir 有值
+        if (!outputDir && ctx?.dataDir) {
+          outputDir = ctx.dataDir;
+        }
         if (outputDir) {
           fs.mkdirSync(outputDir, { recursive: true });
           const mdPath = path.join(outputDir, "DESIGN.md");
@@ -608,49 +616,100 @@ async function execute(input = {}) {
 function generatePreviewHtml(result) {
   const t = result.tokens;
   const now = new Date().toISOString().slice(0, 10);
+  const title = result.title || result.url;
+  const escapeHtml = (s) => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 
-  const colorSwatches = t.colors.map(c =>
-    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-      <div style="width:32px;height:32px;border-radius:4px;background:${c.value};border:1px solid #ddd;"></div>
-      <span style="font-family:monospace;font-size:13px;">${c.value}</span>
-      <span style="font-size:11px;color:#888;">×${c.count} · conf ${c.confidence}</span>
+  // ── 色彩卡片 ──
+  const colorCards = t.colors.map(c => {
+    const isLight = /^(#fff|#ffffff|rgba\(255)/i.test(c.value);
+    return `<div class="color-card">
+      <div class="color-swatch" style="background:${c.value};border-color:${isLight ? '#e0e0e0' : 'transparent'}"></div>
+      <div class="color-info">
+        <code class="color-value">${escapeHtml(c.value)}</code>
+        <span class="color-meta">×${c.count} · 置信度 ${c.confidence}</span>
+        <span class="color-source">${escapeHtml(c.source)}</span>
+      </div>
+    </div>`;
+  }).join("");
+
+  // ── 字体样例 ──
+  const fontCards = t.fonts.map(f => `
+    <div class="font-card">
+      <div class="font-sample" style="font-family:${escapeHtml(f.fullStack)};">
+        永和九年岁在癸丑暮春之初 — ${escapeHtml(f.value)}
+      </div>
+      <div class="font-detail">
+        <code>${escapeHtml(f.fullStack)}</code>
+        <span class="meta">×${f.count} · 置信度 ${f.confidence}</span>
+      </div>
     </div>`
   ).join("");
 
-  const fontSamples = t.fonts.map(f =>
-    `<div style="margin-bottom:12px;">
-      <div style="font-family:${f.fullStack};font-size:24px;">The quick brown fox — ${f.value}</div>
-      <div style="font-size:11px;color:#888;font-family:monospace;">${f.fullStack} · ×${f.count} · conf ${f.confidence}</div>
+  // ── 字号阶梯 ──
+  const fontSizeRows = t.fontSizes.map(s => `
+    <div class="size-row">
+      <span class="size-sample" style="font-size:${escapeHtml(s.value)};line-height:1.5;">Aa 永</span>
+      <code class="size-value">${escapeHtml(s.value)}</code>
+      <span class="size-meta">×${s.count} · ${escapeHtml(s.source)}</span>
     </div>`
   ).join("");
 
-  const fontSizeSamples = t.fontSizes.map(s =>
-    `<div style="display:flex;align-items:baseline;gap:8px;margin-bottom:4px;">
-      <span style="font-size:${s.value};">Aa</span>
-      <span style="font-size:11px;color:#888;font-family:monospace;">${s.value} · ×${s.count}</span>
+  // ── 圆角展示 ──
+  const radiusCards = t.borderRadii.map(r => `
+    <div class="radius-card">
+      <div class="radius-shape" style="border-radius:${escapeHtml(r.value)};"></div>
+      <code>${escapeHtml(r.value)}</code>
+      <span class="meta">×${r.count}</span>
     </div>`
   ).join("");
 
-  const radiusSamples = t.borderRadii.map(r =>
-    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-      <div style="width:40px;height:40px;border-radius:${r.value};background:#6c8ebf;"></div>
-      <span style="font-family:monospace;font-size:13px;">${r.value}</span>
-      <span style="font-size:11px;color:#888;">×${r.count}</span>
+  // ── 阴影展示 ──
+  const shadowCards = t.boxShadows.map(s => `
+    <div class="shadow-card">
+      <div class="shadow-box" style="box-shadow:${escapeHtml(s.value)};"></div>
+      <code class="shadow-value">${escapeHtml(s.value)}</code>
+      <span class="meta">×${s.count}</span>
     </div>`
   ).join("");
 
-  const shadowSamples = t.boxShadows.map(s =>
-    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
-      <div style="width:60px;height:40px;background:white;box-shadow:${s.value};border-radius:4px;"></div>
-      <span style="font-family:monospace;font-size:12px;max-width:300px;word-break:break-all;">${s.value}</span>
-    </div>`
-  ).join("");
+  // ── 间距展示 ──
+  const spacingBars = t.spacings.slice(0, 12).map(s => {
+    const num = parseFloat(s.value) || 0;
+    const isNeg = num < 0;
+    const barWidth = Math.min(Math.abs(num), 120);
+    return `
+    <div class="spacing-row">
+      <div class="spacing-bar" style="width:${barWidth}px;margin-left:${isNeg ? Math.abs(num) : 0}px;"></div>
+      <code>${escapeHtml(s.value)}</code>
+      <span class="meta">×${s.count}</span>
+    </div>`;
+  }).join("");
 
-  const spacingSamples = t.spacings.slice(0, 10).map(s =>
-    `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-      <div style="width:${s.value};height:16px;background:#9673a6;border-radius:2px;min-width:4px;max-width:120px;"></div>
-      <span style="font-family:monospace;font-size:12px;">${s.value}</span>
-      <span style="font-size:11px;color:#888;">×${s.count}</span>
+  // ── CSS 变量 ──
+  const cssVarRows = t.cssVariables.length ? t.cssVariables.map(v => `
+    <div class="var-row">
+      <code class="var-name">${escapeHtml(v.name)}</code>
+      <code class="var-value">${escapeHtml(v.value)}</code>
+      <span class="meta">${escapeHtml(v.source)}</span>
+    </div>`
+  ).join("") : '<p class="empty">无 CSS 自定义属性</p>';
+
+  // ── 统计信息 ──
+  const stats = result.stats;
+  const statItems = [
+    { label: "CSS 块", value: stats.cssChunks },
+    { label: "色彩", value: `${stats.totalColors} → ${t.colors.length}` },
+    { label: "字体", value: `${stats.totalFonts} → ${t.fonts.length}` },
+    { label: "字号", value: `${stats.totalFontSizes} → ${t.fontSizes.length}` },
+    { label: "圆角", value: `${stats.totalRadii} → ${t.borderRadii.length}` },
+    { label: "阴影", value: `${stats.totalShadows} → ${t.boxShadows.length}` },
+    { label: "间距", value: `${stats.totalSpacings} → ${t.spacings.length}` },
+    { label: "CSS 变量", value: stats.totalCssVars },
+  ];
+  const statCards = statItems.map(s => `
+    <div class="stat-card">
+      <div class="stat-value">${s.value}</div>
+      <div class="stat-label">${s.label}</div>
     </div>`
   ).join("");
 
@@ -659,59 +718,155 @@ function generatePreviewHtml(result) {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Design Preview — ${result.title || result.url}</title>
+<title>设计系统文档 — ${escapeHtml(title)}</title>
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 900px; margin: 0 auto; padding: 32px; background: #fafafa; color: #333; }
-  h1 { font-size: 22px; border-bottom: 2px solid #6c8ebf; padding-bottom: 8px; }
-  h2 { font-size: 16px; margin-top: 32px; color: #555; }
-  .meta { font-size: 12px; color: #888; margin-bottom: 24px; }
-  .section { background: white; padding: 16px 20px; border-radius: 8px; margin-bottom: 16px; border: 1px solid #eee; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  :root {
+    --bg: #0f0f10;
+    --surface: #1a1a1c;
+    --surface2: #242427;
+    --border: #2e2e32;
+    --text: #e8e8ea;
+    --text2: #a0a0a8;
+    --text3: #6a6a72;
+    --accent: #6c8ebf;
+    --accent2: #9673a6;
+    --radius: 10px;
+    --mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', 'Consolas', monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: var(--sans); background: var(--bg); color: var(--text); line-height: 1.6; }
+  .container { max-width: 960px; margin: 0 auto; padding: 48px 24px 80px; }
+
+  /* Header */
+  .header { margin-bottom: 48px; }
+  .header h1 { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+  .header .subtitle { font-size: 14px; color: var(--text2); margin-top: 8px; }
+  .header .url { font-family: var(--mono); font-size: 12px; color: var(--accent); word-break: break-all; margin-top: 6px; }
+  .header .date { font-size: 12px; color: var(--text3); margin-top: 4px; }
+
+  /* Stats */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 48px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; text-align: center; }
+  .stat-value { font-size: 18px; font-weight: 600; font-family: var(--mono); color: var(--accent); }
+  .stat-label { font-size: 11px; color: var(--text3); margin-top: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* Sections */
+  .section { margin-bottom: 40px; }
+  .section-title { font-size: 14px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .section-title .count { color: var(--text3); font-weight: 400; margin-left: 8px; }
+
+  /* Colors */
+  .color-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .color-card { display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+  .color-swatch { width: 40px; height: 40px; border-radius: 8px; border: 1px solid var(--border); flex-shrink: 0; }
+  .color-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .color-value { font-family: var(--mono); font-size: 13px; color: var(--text); }
+  .color-meta { font-size: 11px; color: var(--text3); }
+  .color-source { font-size: 10px; color: var(--text3); opacity: 0.6; }
+
+  /* Fonts */
+  .font-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; margin-bottom: 12px; }
+  .font-sample { font-size: 22px; color: var(--text); margin-bottom: 8px; }
+  .font-detail { display: flex; align-items: center; gap: 12px; }
+  .font-detail code { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .font-detail .meta { font-size: 11px; color: var(--text3); }
+
+  /* Font sizes */
+  .size-row { display: flex; align-items: baseline; gap: 16px; padding: 8px 16px; border-radius: 6px; }
+  .size-row:hover { background: var(--surface); }
+  .size-sample { color: var(--text); white-space: nowrap; }
+  .size-value { font-family: var(--mono); font-size: 13px; color: var(--accent); min-width: 80px; }
+  .size-meta { font-size: 11px; color: var(--text3); }
+
+  /* Radius */
+  .radius-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+  .radius-card { display: flex; flex-direction: column; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .radius-shape { width: 48px; height: 48px; background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+  .radius-card code { font-family: var(--mono); font-size: 12px; color: var(--text2); }
+  .radius-card .meta { font-size: 10px; color: var(--text3); }
+
+  /* Shadows */
+  .shadow-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; }
+  .shadow-card { display: flex; flex-direction: column; align-items: center; gap: 10px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+  .shadow-box { width: 64px; height: 44px; background: var(--surface2); border-radius: 6px; }
+  .shadow-value { font-family: var(--mono); font-size: 11px; color: var(--text2); word-break: break-all; text-align: center; }
+  .shadow-card .meta { font-size: 10px; color: var(--text3); }
+
+  /* Spacings */
+  .spacing-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
+  .spacing-bar { height: 12px; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 2px; min-width: 4px; }
+  .spacing-row code { font-family: var(--mono); font-size: 12px; color: var(--accent); min-width: 60px; }
+  .spacing-row .meta { font-size: 11px; color: var(--text3); }
+
+  /* CSS Vars */
+  .var-row { display: grid; grid-template-columns: 200px 1fr auto; gap: 12px; padding: 8px 16px; border-radius: 6px; align-items: center; }
+  .var-row:hover { background: var(--surface); }
+  .var-name { font-family: var(--mono); font-size: 12px; color: var(--accent2); }
+  .var-value { font-family: var(--mono); font-size: 12px; color: var(--text2); }
+  .var-row .meta { font-size: 10px; color: var(--text3); }
+
+  .empty { color: var(--text3); font-size: 13px; padding: 16px; }
+
+  /* Footer */
+  .footer { margin-top: 48px; padding-top: 24px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text3); display: flex; justify-content: space-between; }
+
+  @media (max-width: 640px) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .color-grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
-<h1>🎨 Design Token Preview</h1>
-<div class="meta">
-  <strong>来源:</strong> ${result.url}<br>
-  <strong>标题:</strong> ${result.title || "N/A"}<br>
-  <strong>提取时间:</strong> ${now}
-</div>
+<div class="container">
+  <div class="header">
+    <h1>设计系统文档</h1>
+    <div class="subtitle">${escapeHtml(title)}</div>
+    <div class="url">${escapeHtml(result.url)}</div>
+    <div class="date">提取时间 ${now} · 网页存档器 v2.1</div>
+  </div>
 
-<div class="grid">
-  <div class="section">
-    <h2>色彩 (${t.colors.length})</h2>
-    ${colorSwatches || "<p style='color:#999;'>无数据</p>"}
-  </div>
-  <div class="section">
-    <h2>字体族 (${t.fonts.length})</h2>
-    ${fontSamples || "<p style='color:#999;'>无数据</p>"}
-  </div>
-</div>
+  <div class="stats">${statCards}</div>
 
-<div class="grid">
   <div class="section">
-    <h2>字号 (${t.fontSizes.length})</h2>
-    ${fontSizeSamples || "<p style='color:#999;'>无数据</p>"}
+    <div class="section-title">色彩系统 <span class="count">${t.colors.length} 种</span></div>
+    <div class="color-grid">${colorCards || '<p class="empty">无数据</p>'}</div>
   </div>
-  <div class="section">
-    <h2>圆角 (${t.borderRadii.length})</h2>
-    ${radiusSamples || "<p style='color:#999;'>无数据</p>"}
-  </div>
-</div>
 
-<div class="grid">
   <div class="section">
-    <h2>阴影 (${t.boxShadows.length})</h2>
-    ${shadowSamples || "<p style='color:#999;'>无数据</p>"}
+    <div class="section-title">字体族 <span class="count">${t.fonts.length} 种</span></div>
+    ${fontCards || '<p class="empty">无数据</p>'}
   </div>
-  <div class="section">
-    <h2>间距 (${t.spacings.length})</h2>
-    ${spacingSamples || "<p style='color:#999;'>无数据</p>"}
-  </div>
-</div>
 
-<div class="meta" style="margin-top:24px;">
-  由网页存档器 v2.1 自动生成 · CSS 块: ${result.stats.cssChunks} · CSS 变量: ${result.stats.totalCssVars}
+  <div class="section">
+    <div class="section-title">字号阶梯 <span class="count">${t.fontSizes.length} 级</span></div>
+    ${fontSizeRows || '<p class="empty">无数据</p>'}
+  </div>
+
+  <div class="section">
+    <div class="section-title">圆角系统 <span class="count">${t.borderRadii.length} 种</span></div>
+    <div class="radius-grid">${radiusCards || '<p class="empty">无数据</p>'}</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">阴影系统 <span class="count">${t.boxShadows.length} 种</span></div>
+    <div class="shadow-grid">${shadowCards || '<p class="empty">无数据</p>'}</div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">间距系统 <span class="count">${t.spacings.length} 种</span></div>
+    ${spacingBars || '<p class="empty">无数据</p>'}
+  </div>
+
+  <div class="section">
+    <div class="section-title">CSS 自定义属性 <span class="count">${t.cssVariables.length} 个</span></div>
+    ${cssVarRows}
+  </div>
+
+  <div class="footer">
+    <span>由网页存档器 v2.1 自动生成</span>
+    <span>CSS 块 ${stats.cssChunks} · 数据源 crawl4ai</span>
+  </div>
 </div>
 </body>
 </html>`;

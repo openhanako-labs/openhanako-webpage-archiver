@@ -396,7 +396,7 @@ function generatePrompts(issues, focus, maxPrompts, sourceInfo) {
 
 // ─── 主执行 ──────────────────────────────────────────
 
-async function execute(input = {}) {
+async function execute(input = {}, ctx) {
   const { filePath, url, focus = "all", maxPrompts = 10 } = input;
 
   if (!filePath && !url) {
