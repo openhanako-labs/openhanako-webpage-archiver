@@ -427,56 +427,59 @@ async function execute(input = {}, ctx) {
     html = fs.readFileSync(filePath, "utf-8");
     sourceInfo = `文件: ${path.basename(filePath)}`;
   } else {
-    // 从 URL 获取（使用 crawl4ai）
+    // 从 URL 获取（使用 crawl4ai）— 通过临时文件传递 HTML 避免 Windows GBK 编码崩溃
     sourceInfo = `URL: ${url}`;
     const tmpDir = os.tmpdir();
     const tmpFile = path.join(tmpDir, `edit-prompt-fetch-${Date.now()}.py`);
-    const script = `
-import asyncio, json, sys
-from crawl4ai import AsyncWebCrawler
-
-class _StdoutRedirect:
-    def write(self, s):
-        if not s.strip(): return
-        sys.__stderr__.write("[LOG] " + s)
-    def flush(self): pass
-    def isatty(self): return False
-
-sys.stdout = _StdoutRedirect()
-
-async def main():
-    async with AsyncWebCrawler(verbose=False) as crawler:
-        result = await crawler.arun(url=${JSON.stringify(url)}, word_count_threshold=0)
-        html = result.html or ""
-    sys.stdout = sys.__stdout__
-    if html:
-        print(json.dumps({"ok": True, "html": html}, ensure_ascii=False))
-    else:
-        print(json.dumps({"ok": False, "error": "未能获取页面内容"}, ensure_ascii=False))
-
-asyncio.run(main())
-`;
-    fs.writeFileSync(tmpFile, script, "utf-8");
+    const htmlOutFile = path.join(tmpDir, `edit-prompt-html-${Date.now()}.txt`);
+    const script = [
+      'import asyncio, sys, os',
+      'from crawl4ai import AsyncWebCrawler',
+      '',
+      'class _LR:',
+      '    def write(self, s):',
+      '        if not s.strip(): return',
+      '        sys.__stderr__.write("[LOG] " + s)',
+      '    def flush(self): pass',
+      '    def isatty(self): return False',
+      '',
+      'sys.stdout = _LR()',
+      '',
+      'async def main():',
+      '    async with AsyncWebCrawler(verbose=False) as crawler:',
+      '        result = await crawler.arun(url=sys.argv[1], word_count_threshold=0)',
+      '        html = result.html or ""',
+      '    with open(sys.argv[2], "w", encoding="utf-8") as f:',
+      '        f.write(html if html else "__EMPTY__")',
+      '',
+      'asyncio.run(main())',
+    ].join('\n');
+    fs.writeFileSync(tmpFile, script, 'utf-8');
     try {
-      const stdout = execFileSync("python", [tmpFile], {
+      execFileSync('python', [tmpFile, url, htmlOutFile], {
         timeout: 90000,
-        encoding: "utf-8",
-        maxBuffer: 20 * 1024 * 1024,
-      }).trim();
-      const result = JSON.parse(stdout);
-      if (!result.ok) {
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        encoding: 'utf-8',
+        maxBuffer: 50 * 1024 * 1024,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
+      });
+      if (!fs.existsSync(htmlOutFile)) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: '未能获取页面内容' }, null, 2) }] };
       }
-      html = result.html;
+      const fileContent = fs.readFileSync(htmlOutFile, 'utf-8').trim();
+      if (fileContent === '__EMPTY__' || !fileContent) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: '未能获取页面内容' }, null, 2) }] };
+      }
+      html = fileContent;
     } catch (e) {
       try { fs.unlinkSync(tmpFile); } catch {}
+      try { fs.unlinkSync(htmlOutFile); } catch {}
       return {
         content: [{
-          type: "text",
+          type: 'text',
           text: JSON.stringify({
             ok: false,
             error: e.message,
-            hint: "确认 crawl4ai 已安装: pip install crawl4ai",
+            hint: '确认 crawl4ai 已安装: pip install crawl4ai',
           }, null, 2),
         }],
       };
@@ -487,6 +490,10 @@ asyncio.run(main())
   // 分析
   const issues = analyzeHtml(html);
   const result = generatePrompts(issues, focus, maxPrompts, sourceInfo);
+
+  // 清理临时文件
+  try { fs.unlinkSync(tmpFile); } catch {}
+  try { fs.unlinkSync(htmlOutFile); } catch {}
 
   // 页面统计
   const stats = {
@@ -519,4 +526,5 @@ asyncio.run(main())
   };
 }
 
+// v2.1.1-fix-GBK-encoding
 export { name, description, parameters, execute };

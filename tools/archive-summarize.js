@@ -18,6 +18,9 @@
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+
+const __PLUGIN_DIR = path.resolve(path.join(path.dirname(fileURLToPath(import.meta.url)), ".."));
 
 const name = "archive_summarize";
 const description = "扫描网页存档目录，提取标题、来源 URL、正文文本和日期，生成结构化元数据 JSON。v2.1 新增隐私审计维度：扫描追踪脚本与指纹采集 API。Agent 可基于此生成 AI 摘要、标签和关键实体。触发词：存档摘要、生成摘要、AI 摘要、archive summary。";
@@ -35,81 +38,24 @@ const parameters = {
   required: ["archiveDir"],
 };
 
-// ─── 追踪脚本指纹库 ──────────────────────────────────────
+// ─── 加载外部规则库 ──────────────────────────────────────
+// 默认从插件 data/ 目录加载，允许运行时扩展
 
-const TRACKER_PATTERNS = [
-  { pattern: /google-analytics\.com|googletagmanager\.com|gtag\(|ga\(/i, name: "Google Analytics", category: "analytics",
-    how: "通过页面嵌入的 JS 脚本加载 Google Analytics 追踪代码",
-    means: "记录页面访问、用户行为、来源渠道、设备信息",
-    action: "可使用 uBlock Origin 等广告拦截器屏蔽；浏览器隐私设置可限制追踪" },
-  { pattern: /facebook\.net\/.*fbevents|fbq\(|connect\.facebook\.net/i, name: "Facebook Pixel", category: "analytics",
-    how: "通过 Meta Pixel 脚本注入页面",
-    means: "记录用户行为用于 Facebook 广告归因和受众画像",
-    action: "广告拦截器可屏蔽；或使用 Firefox/Safari 内置追踪保护" },
-  { pattern: /hotjar\.com/i, name: "Hotjar", category: "analytics",
-    how: "通过 Hotjar 追踪脚本注入页面",
-    means: "记录会话回放、热力图、用户行为 funnel",
-    action: "广告拦截器可屏蔽" },
-  { pattern: /clarity\.ms/i, name: "Microsoft Clarity", category: "analytics",
-    how: "注入 Clarity 追踪脚本",
-    means: "记录会话回放、热力图、用户行为",
-    action: "广告拦截器可屏蔽" },
-  { pattern: /doubleclick\.net|adservice\.google/i, name: "Google Ads / DoubleClick", category: "advertising",
-    how: "通过 DoubleClick 广告网络加载",
-    means: "跨站追踪用户用于广告投放",
-    action: "广告拦截器可屏蔽；浏览器可启用隐私沙箱" },
-  { pattern: /amazon-adsystem\.com|amzn\.to/i, name: "Amazon Ads", category: "advertising",
-    how: "通过 Amazon 广告脚本加载",
-    means: "记录用户行为用于亚马逊广告归因",
-    action: "广告拦截器可屏蔽" },
-  { pattern: /plausible\.io|matomo\.cloud|umami\.is/i, name: "隐私友好分析工具", category: "analytics",
-    how: "加载隐私友好的分析脚本",
-    means: "通常不使用 Cookie、不追踪个人身份信息",
-    action: "通常无需干预，这类工具设计上尊重隐私" },
-];
+function loadRuleSet() {
+  const rulePaths = [
+    path.join(__PLUGIN_DIR, "data", "tracker-patterns.json"),
+  ];
+  for (const rp of rulePaths) {
+    if (fs.existsSync(rp)) {
+      try {
+        return JSON.parse(fs.readFileSync(rp, "utf-8"));
+      } catch {}
+    }
+  }
+  return null;
+}
 
-const FINGERPRINT_PATTERNS = [
-  { pattern: /RTCPeerConnection|createDataChannel/i, name: "WebRTC IP 泄露", severity: "high",
-    how: "通过 WebRTC API 创建 STUN 连接，暴露真实 IP 地址",
-    means: "即使用 VPN，也可能通过 WebRTC 泄露真实 IP",
-    action: "浏览器可禁用 WebRTC 或安装 WebRTC 阻止扩展" },
-  { pattern: /canvas\.toDataURL|canvas\.getImageData|canvas\.measureText/i, name: "Canvas 指纹", severity: "medium",
-    how: "通过 Canvas API 绘制图形并读取像素数据",
-    means: "不同设备/浏览器的渲染结果略有差异，可用于唯一标识",
-    action: "Brave/Firefox 会添加噪声；CanvasBlocker 等扩展可阻止" },
-  { pattern: /AudioContext|OfflineAudioContext/i, name: "音频指纹", severity: "medium",
-    how: "通过 AudioContext 处理音频信号",
-    means: "不同硬件的音频处理结果不同，可用于指纹追踪",
-    action: "Brave 浏览器会添加噪声" },
-  { pattern: /navigator\.hardwareConcurrency|navigator\.deviceMemory/i, name: "硬件信息探测", severity: "low",
-    how: "通过 navigator API 读取 CPU 核心数和设备内存",
-    means: "结合其他信息可提高指纹唯一性",
-    action: "部分浏览器会返回模糊值或限制访问" },
-  { pattern: /navigator\.getBattery|battery\.level|battery\.charging/i, name: "电池状态 API", severity: "low",
-    how: "通过 Battery API 读取电池电量和充电状态",
-    means: "电池电量随时间变化，可用于短时间追踪",
-    action: "Firefox/Safari 已限制或移除此 API" },
-  { pattern: /navigator\.plugins|navigator\.mimeTypes/i, name: "插件指纹", severity: "low",
-    how: "通过 navigator.plugins 读取已安装插件列表",
-    means: "不同用户安装的插件组合不同，可用于指纹",
-    action: "现代浏览器已限制返回值" },
-  { pattern: /window\.screen\.|screen\.colorDepth|screen\.pixelDepth/i, name: "屏幕信息", severity: "low",
-    how: "通过 window.screen 对象读取分辨率、色深等",
-    means: "屏幕参数是指纹的常见组成部分",
-    action: "部分隐私浏览器会添加随机噪声" },
-  { pattern: /Intl\.DateTimeFormat|navigator\.language|navigator\.languages/i, name: "语言与时区", severity: "low",
-    how: "通过 Intl API 和 navigator.language 读取语言和时区",
-    means: "语言和时区组合可缩小用户地理位置范围",
-    action: "Tor 浏览器会将时区统一为 UTC" },
-  { pattern: /document\.font|FontFace|fonts\.check/i, name: "字体枚举", severity: "medium",
-    how: "通过检测已安装字体的渲染差异枚举字体列表",
-    means: "不同系统安装的字体不同，是强指纹信号",
-    action: "Firefox 的 privacy.resistFingerprinting 可防御" },
-  { pattern: /navigator\.clipboard|navigator\.permissions/i, name: "剪贴板/权限探测", severity: "low",
-    how: "通过 Clipboard API 或 Permissions API 探测权限状态",
-    means: "可用于判断用户浏览习惯和权限授予模式",
-    action: "浏览器会提示用户授权" },
-];
+const RULES = loadRuleSet();
 
 // ─── 隐私审计 ──────────────────────────────────────────
 
@@ -121,39 +67,33 @@ function auditPrivacy(htmlContent) {
     summary: "",
   };
 
+  // 使用外部规则库，兜底内置规则
+  const trackerRules = RULES?.trackers || [];
+  const fpRules = RULES?.fingerprints || [];
+  const weights = RULES?.riskWeights || { tracker: { analytics: 2, advertising: 3 }, fingerprint: { high: 4, medium: 2, low: 1 } };
+  const riskThresholds = RULES?.riskLevels || { low: 0, medium: 8, high: 15 };
+
   // 扫描追踪脚本
-  for (const tracker of TRACKER_PATTERNS) {
-    if (tracker.pattern.test(htmlContent)) {
-      const entry = {
-        name: tracker.name,
-        category: tracker.category,
-        how: tracker.how || "通过页面嵌入的脚本加载",
-        means: tracker.means || "记录用户行为数据",
-        action: tracker.action || "可使用广告拦截器屏蔽",
-      };
+  for (const tracker of trackerRules) {
+    if (new RegExp(tracker.pattern, "i").test(htmlContent)) {
+      const entry = { name: tracker.name, category: tracker.category, how: tracker.how, means: tracker.means, action: tracker.action };
       findings.trackers.push(entry);
-      findings.riskScore += tracker.category === "advertising" ? 3 : 2;
+      findings.riskScore += (weights.tracker[tracker.category] || 2);
     }
   }
 
   // 扫描指纹 API
-  for (const fp of FINGERPRINT_PATTERNS) {
-    if (fp.pattern.test(htmlContent)) {
-      findings.fingerprintApis.push({
-        name: fp.name,
-        severity: fp.severity,
-        how: fp.how,
-        means: fp.means,
-        action: fp.action,
-      });
-      findings.riskScore += fp.severity === "high" ? 4 : fp.severity === "medium" ? 2 : 1;
+  for (const fp of fpRules) {
+    if (new RegExp(fp.pattern, "i").test(htmlContent)) {
+      findings.fingerprintApis.push({ name: fp.name, severity: fp.severity, how: fp.how, means: fp.means, action: fp.action });
+      findings.riskScore += (weights.fingerprint[fp.severity] || 1);
     }
   }
 
   // 风险评级
   let riskLevel = "低";
-  if (findings.riskScore >= 15) riskLevel = "高";
-  else if (findings.riskScore >= 8) riskLevel = "中";
+  if (findings.riskScore >= riskThresholds.high) riskLevel = "高";
+  else if (findings.riskScore >= riskThresholds.medium) riskLevel = "中";
 
   findings.summary = `发现 ${findings.trackers.length} 个追踪器，${findings.fingerprintApis.length} 个指纹 API，风险等级：${riskLevel}（评分 ${findings.riskScore}）`;
 
