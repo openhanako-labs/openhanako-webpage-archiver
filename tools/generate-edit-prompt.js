@@ -545,4 +545,4 @@ async function execute(input = {}, ctx) {
 }
 
 // v2.1.1-fix-GBK-encoding
-export { name, description, parameters, execute };
+export { name, description, parameters, execute, analyzeHtml, generatePrompts };
