@@ -9,6 +9,9 @@
   "contributes": {
     "tools": [
       {
+        "source": "tools/extract-elements.js"
+      },
+      {
         "source": "tools/save-page.js"
       },
       {
