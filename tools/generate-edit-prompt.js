@@ -427,32 +427,51 @@ async function execute(input = {}, ctx) {
     html = fs.readFileSync(filePath, "utf-8");
     sourceInfo = `文件: ${path.basename(filePath)}`;
   } else {
-    // 从 URL 获取（使用 crawl4ai）— 通过临时文件传递 HTML 避免 Windows GBK 编码崩溃
+    // 从 URL 获取（使用 Scrapling）— 三层降级 + 临时文件传递 HTML
     sourceInfo = `URL: ${url}`;
     const tmpDir = os.tmpdir();
     const tmpFile = path.join(tmpDir, `edit-prompt-fetch-${Date.now()}.py`);
     const htmlOutFile = path.join(tmpDir, `edit-prompt-html-${Date.now()}.txt`);
     const script = [
-      'import asyncio, sys, os',
-      'from crawl4ai import AsyncWebCrawler',
+      'import sys',
+      'from scrapling.fetchers import Fetcher',
       '',
-      'class _LR:',
-      '    def write(self, s):',
-      '        if not s.strip(): return',
-      '        sys.__stderr__.write("[LOG] " + s)',
-      '    def flush(self): pass',
-      '    def isatty(self): return False',
+      'url = sys.argv[1]',
+      'outfile = sys.argv[2]',
+      'html = None',
       '',
-      'sys.stdout = _LR()',
+      '# Tier 1: Fast HTTP with TLS fingerprint',
+      'try:',
+      '    f = Fetcher()',
+      '    page = f.get(url)',
+      '    if page.status == 200 and page.html_content:',
+      '        html = page.html_content',
+      'except Exception:',
+      '    pass',
       '',
-      'async def main():',
-      '    async with AsyncWebCrawler(verbose=False) as crawler:',
-      '        result = await crawler.arun(url=sys.argv[1], word_count_threshold=0)',
-      '        html = result.html or ""',
-      '    with open(sys.argv[2], "w", encoding="utf-8") as f:',
-      '        f.write(html if html else "__EMPTY__")',
+      '# Tier 2: Playwright for JS-rendered pages',
+      'if not html:',
+      '    try:',
+      '        from scrapling.fetchers import DynamicFetcher',
+      '        page = DynamicFetcher.fetch(url, headless=True, network_idle=True)',
+      '        if page.html_content:',
+      '            html = page.html_content',
+      '    except Exception:',
+      '        pass',
       '',
-      'asyncio.run(main())',
+      '# Tier 3: Stealth mode for Cloudflare',
+      'if not html:',
+      '    try:',
+      '        from scrapling.fetchers import StealthyFetcher',
+      '        StealthyFetcher.adaptive = True',
+      '        page = StealthyFetcher.fetch(url, headless=True, network_idle=True)',
+      '        if page.html_content:',
+      '            html = page.html_content',
+      '    except Exception:',
+      '        pass',
+      '',
+      'with open(outfile, "w", encoding="utf-8") as f:',
+      '    f.write(html if html else "__EMPTY__")',
     ].join('\n');
     fs.writeFileSync(tmpFile, script, 'utf-8');
     try {
@@ -460,7 +479,6 @@ async function execute(input = {}, ctx) {
         timeout: 90000,
         encoding: 'utf-8',
         maxBuffer: 50 * 1024 * 1024,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
       });
       if (!fs.existsSync(htmlOutFile)) {
         return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: '未能获取页面内容' }, null, 2) }] };
@@ -479,7 +497,7 @@ async function execute(input = {}, ctx) {
           text: JSON.stringify({
             ok: false,
             error: e.message,
-            hint: '确认 crawl4ai 已安装: pip install crawl4ai',
+            hint: '确认 Scrapling 已安装: pip install scrapling',
           }, null, 2),
         }],
       };

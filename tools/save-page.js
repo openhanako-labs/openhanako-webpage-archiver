@@ -20,36 +20,56 @@ const parameters = {
 };
 
 function fetchHtml(url) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wpa-crawl4ai-"));
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wpa-scrapling-"));
   const tmpFile = path.join(tmpDir, "fetch.py");
   const outFile = path.join(tmpDir, "result.json");
   const script = `
-import asyncio, json, sys, os
-from crawl4ai import AsyncWebCrawler
-class _R:
-    def write(self, s):
-        if not s.strip(): return
-        sys.__stderr__.write(s)
-    def flush(self): pass
-    def isatty(self): return False
-sys.stdout = _R()
-async def main():
-    async with AsyncWebCrawler(verbose=False) as c:
-        r = await c.arun(url=__URL__, word_count_threshold=0)
-    h = r.html or ""
-    sys.stdout = sys.__stdout__
-    with open(__OUTFILE__, "w", encoding="utf-8") as f:
-        json.dump({"ok": True, "html": h, "len": len(h)}, f, ensure_ascii=True)
+import sys, json
+from scrapling.fetchers import Fetcher
+
+url = sys.argv[1]
+outfile = sys.argv[2]
+html = None
+
+# Tier 1: Fast HTTP with TLS fingerprint impersonation
 try:
-    asyncio.run(main())
-except Exception as e:
-    sys.stdout = sys.__stdout__
-    with open(__OUTFILE__, "w", encoding="utf-8") as f:
-        json.dump({"ok": False, "error": str(e)}, f, ensure_ascii=True)
-`.replace("__URL__", JSON.stringify(url)).replace("__OUTFILE__", JSON.stringify(outFile));
+    f = Fetcher()
+    page = f.get(url)
+    if page.status == 200 and page.html_content:
+        html = page.html_content
+except Exception:
+    pass
+
+# Tier 2: Playwright for JS-rendered/SPA pages
+if not html:
+    try:
+        from scrapling.fetchers import DynamicFetcher
+        page = DynamicFetcher.fetch(url, headless=True, network_idle=True)
+        if page.html_content:
+            html = page.html_content
+    except Exception:
+        pass
+
+# Tier 3: Stealth mode for Cloudflare-protected pages
+if not html:
+    try:
+        from scrapling.fetchers import StealthyFetcher
+        StealthyFetcher.adaptive = True
+        page = StealthyFetcher.fetch(url, headless=True, network_idle=True)
+        if page.html_content:
+            html = page.html_content
+    except Exception:
+        pass
+
+result = {"ok": bool(html), "html": html or "", "len": len(html or "")}
+if not html:
+    result["error"] = "Unable to fetch page content"
+with open(outfile, "w", encoding="utf-8") as f:
+    json.dump(result, f, ensure_ascii=True)
+`;
   fs.writeFileSync(tmpFile, script, "utf-8");
   try {
-    execFileSync("python", [tmpFile], { timeout: 90000, windowsHide: true });
+    execFileSync("python", [tmpFile, url, outFile], { timeout: 90000, windowsHide: true });
     const out = fs.readFileSync(outFile, "utf-8");
     const r = JSON.parse(out);
     if (!r.ok) throw new Error(r.error);
